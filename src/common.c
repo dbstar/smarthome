@@ -52,17 +52,24 @@ void ms_sleep(unsigned int ms)
 }
 
 /*
-功能：	获得随机值，封装了srand()和rand()组合，采用时间usec%10000作为种子，比直接采用sec更加“随机”，敏感度高一些
-输入：	（无）
-返回：	无符号整型值，类似rand()的返回值
+功能：	获得随机值，封装了srand()和rand()组合，采用时间usec作为种子，比直接采用sec更加“随机”，敏感度高一些
+输入：	rand_top表示封顶的随机数（以浮点型表示的整型值），结果将大于等于0但小于此值。
+返回：	指定范围内的无符号整型值，类似rand()的返回值
+举例：	调用randint(5.0)得到的是0、1、2、3、4五者之一的随机数。效果类似于rand()%x
 */
-unsigned int randint()
+/*
+用"int x = rand() % 100;"来生成 0 到 100 之间的随机数这种方法是不或取的，
+比较好的做法是： j=(int)(ｎ*rand()/(RAND_MAX+1.0))产生一个0到ｎ之间的随机数。
+注意要使用浮点数，否则除法使用后结果会有不妥。
+*/
+unsigned int randint(float rand_top)
 {
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	
-	srand((unsigned int)(tv.tv_usec)%10000);
-	return rand();
+	srand((unsigned int)tv.tv_usec);
+		
+	return (unsigned int)(rand_top*rand()/(RAND_MAX+1.0));
 }
 
 /* 

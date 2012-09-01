@@ -177,10 +177,10 @@ int timing_init(void)
 	g_power_consumption_inquire_hour = -1;
 
 	g_power_consumption_upload_tm.tm_hour = -1;
-	g_power_consumption_upload_tm.tm_min = 55+randint()%5;
+	g_power_consumption_upload_tm.tm_min = 55+randint(5.0);
 	
 	g_power_upload_tm.tm_hour = -1;
-	g_power_upload_tm.tm_min = randint()%5;
+	g_power_upload_tm.tm_min = randint(5.0);
 
 	DEBUG("g_power_consumption_upload_tm.tm_min=%d, g_power_upload_tm.tm_min=%d\n", g_power_consumption_upload_tm.tm_min, g_power_upload_tm.tm_min);
 
@@ -219,9 +219,16 @@ static int timing_task_ring_callback(struct timeval *tv_datum, int type_id, int 
 	memset(sqlite_cmd, 0, sizeof(sqlite_cmd));
 	sprintf(sqlite_cmd,"SELECT typeID,cmdType,controlVal FROM time WHERE typeID=%d AND controlTime=%d;", type_id, absolute_sec);
 	INSTRUCTION_RESULT_E ret = sqlite_read(sqlite_cmd, NULL, sqlite_callback);
-	if(ret>RESULT_OK)
+	if(ret>RESULT_OK){
 		ret = RESULT_OK;
-		
+	
+		/*
+		目前的timer都来自于插座的定时任务，所以直接调用插座状态上报
+		*/
+		char typeIDs[256];
+		snprintf(typeIDs, sizeof(typeIDs), "%d", type_id);
+		sockets_status_report(typeIDs);
+	}
 	return -1;	// -1: invalide the timer after call
 }
 
@@ -458,27 +465,23 @@ int timer_poll(void)
 			(1900+now_tm.tm_year), (1+now_tm.tm_mon),now_tm.tm_mday,now_tm.tm_hour + timezone_repair(), now_tm.tm_min, now_tm.tm_sec);
 		DEBUG("g_power_consumption_upload_tm.tm_hour=%d, g_power_consumption_upload_tm.tm_min=%d\n", g_power_consumption_upload_tm.tm_hour,g_power_consumption_upload_tm.tm_min);
 		g_power_consumption_upload_tm.tm_hour = now_tm.tm_hour;
-		g_power_consumption_upload_tm.tm_min = 55+randint()%5;
+		g_power_consumption_upload_tm.tm_min = 55+randint(5.0);
 		
 		/*取消正在上报但没有完成的动作，然后将其标记从“1”恢复为“0”，合并到本次上报。这也用于解决标记为“1”后掉电而导致记录飞掉的情况*/
 		/*一般情况下，这个步骤是空动作*/
 		smart_power_active_reported_clear(CMD_ACTIVE_REPORTED_POWER);
-		memset(sqlite_cmd, 0, sizeof(sqlite_cmd));
 		snprintf(sqlite_cmd, sizeof(sqlite_cmd), "UPDATE power SET status=0 WHERE status=1;");
 		sqlite_execute(sqlite_cmd);
 		
-		memset(sqlite_cmd, 0, sizeof(sqlite_cmd));
-		sprintf(sqlite_cmd,"SELECT typeID, hourTime, data FROM power WHERE status=0;");
+		snprintf(sqlite_cmd, sizeof(sqlite_cmd), "SELECT typeID, hourTime, data FROM power WHERE status=0;");
 //		DEBUG("active_power_sum addr=%p\n", sqlite_callback);
-		memset(entity, 0, sizeof(entity));
 		snprintf(entity, sizeof(entity), "%s", REPORT_POWER_PREFIX);
 		ret = sqlite_read(sqlite_cmd, entity, sqlite_callback);
 		if(ret>RESULT_OK){
 			/*将已经查询的记录标记为“1”，主动上报成功或失败后，将重新标记，避免重复或遗漏上报*/
 			/*标准的做法应当是将查询和status置位放在一个数据库“事务”中完成，以确保状态转换同步*/
 			/*还有一个漏洞：如果由于记录太多导致一个alterable_entity无法承载所有待上报记录，而这里却一次性都打上标记“1”，从而导致多出的记录被意外丢掉*/
-			memset(sqlite_cmd, 0, sizeof(sqlite_cmd));
-			sprintf(sqlite_cmd,"UPDATE power SET status=1 WHERE status=0;");
+			snprintf(sqlite_cmd, sizeof(sqlite_cmd), "UPDATE power SET status=1 WHERE status=0;");
 			sqlite_execute(sqlite_cmd);
 			snprintf(	entity+strlen(entity), sizeof(entity)-strlen(entity), 
 					"#");
@@ -493,23 +496,19 @@ int timer_poll(void)
 			(1900+now_tm.tm_year), (1+now_tm.tm_mon),now_tm.tm_mday,now_tm.tm_hour + timezone_repair(), now_tm.tm_min, now_tm.tm_sec);
 		DEBUG("g_power_upload_tm.tm_hour=%d, g_power_upload_tm=%d\n", g_power_upload_tm.tm_hour, g_power_upload_tm.tm_min);
 		g_power_upload_tm.tm_hour = now_tm.tm_hour;
-		g_power_upload_tm.tm_min = randint()%5;
+		g_power_upload_tm.tm_min = randint(5.0);
 		
 		smart_power_active_reported_clear(CMD_ACTIVE_REPORTED_ACTPOWER);
-		memset(sqlite_cmd, 0, sizeof(sqlite_cmd));
 		snprintf(sqlite_cmd, sizeof(sqlite_cmd), "UPDATE actpower SET status=0 WHERE status=1;");
 		sqlite_execute(sqlite_cmd);
 		
-		memset(sqlite_cmd, 0, sizeof(sqlite_cmd));
-		sprintf(sqlite_cmd,"SELECT typeID, hourTime, data FROM actpower WHERE status=0;");
+		snprintf(sqlite_cmd, sizeof(sqlite_cmd), "SELECT typeID, hourTime, data FROM actpower WHERE status=0;");
 //		DEBUG("active_power_sum addr=%p\n", sqlite_callback);
-		memset(entity, 0, sizeof(entity));
 		snprintf(entity, sizeof(entity), "%s", REPORT_ACTPOWER_PREFIX);
 		ret = sqlite_read(sqlite_cmd, entity, sqlite_callback);
 		if(ret>RESULT_OK){
 			/*标准的做法应当是将查询和status置位放在一个数据库“事务”中完成，以确保状态转换同步*/
-			memset(sqlite_cmd, 0, sizeof(sqlite_cmd));
-			sprintf(sqlite_cmd,"UPDATE actpower SET status=1 WHERE status=0;");
+			snprintf(sqlite_cmd, sizeof(sqlite_cmd), "UPDATE actpower SET status=1 WHERE status=0;");
 			sqlite_execute(sqlite_cmd);
 			snprintf(	entity+strlen(entity), sizeof(entity)-strlen(entity), 
 					"#");

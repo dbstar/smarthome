@@ -59,6 +59,9 @@ typedef enum{
 #define DEV_TTY_2		"/dev/ttyS2"
 #define DEV_TTY_3		"/dev/ttyS3"
 
+#define SERIAL_RESPONSE_LEN_MIN	12
+#define SERIAL_RESPONSE_LEN_MAX	24
+
 typedef enum{
 	SOCKET_STATUS_EXCEPTION = -1,
 	SOCKET_STATUS_CLOSED,
@@ -95,6 +98,7 @@ typedef enum{
 	CMD_HEADER_INNER,
 	CMD_ACTIVE_REPORTED_ACTPOWER,
 	CMD_ACTIVE_REPORTED_POWER,
+	CMD_ACTIVE_REPORTED_STATUS,
 	CMD_INVALID
 }CMD_HEADER_E;
 
@@ -232,14 +236,14 @@ typedef enum{
 //#define TEST_SERIAL_CMD_ONLY_ONCE	// 仅在调试串口时使用，每次执行可执行程序，只对串口操作一个write-read组合
 //#define HEARTBEAT_SUPPORT		// 是否发送心跳。目前暂不发送
 
-#define SERIAL_RECV_RETRY		(16)	// 从串口接收命令尝试的次数，这个值和select的超时时间共同决定了串口接收时的反应速度
+#define SERIAL_RECV_RETRY		(12)	// 从串口接收命令尝试的次数，这个值和select的超时时间共同决定了串口接收时的反应速度
 #define TIMEZONE_EMENDATION		(8)	// 北京时间，在0时区时间基础上加8个小时。
 
 int appoint_str2int(char *str, unsigned int str_len, unsigned int start_position, unsigned int appoint_len, int base);
 void myDelay(int delay);
 
 void ms_sleep(unsigned int ms);
-unsigned int randint();
+unsigned int randint(float rand_top);
 int timezone_repair(void);
 int dir_exist_ensure(char *dir);
 int zero_sec_get(time_t appoint_secs);

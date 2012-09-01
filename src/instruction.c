@@ -238,14 +238,19 @@ static INSTRUCTION_RESULT_E instruction_timing_task_add(INSTRUCTION_S *instructi
 	本地使用时只需要做时区校正，而不需要做服务器时间校正。
 	*/
 	///	insert the value in the command into time
-	memset(sqlite_cmd_str, 0, sizeof(sqlite_cmd_str));
-	sprintf(sqlite_cmd_str,"INSERT INTO time(typeID,cmdType,controlVal,controlTime,frequency,remark) VALUES(%d,%d,%d,%d,%d,'%s');",\
-			l_typeID,l_cmdType,l_controlValue,control_time,l_frequency,p_entity+12);
-	DEBUG("sqlite cmd str: %s\n", sqlite_cmd_str);
-	
-	INSTRUCTION_RESULT_E ret =sqlite_execute(sqlite_cmd_str);											///	quit
-	if(RESULT_OK==ret){
-		timing_task_refresh();
+	INSTRUCTION_RESULT_E ret = ERR_OTHER;
+	if(l_frequency>=0 && control_time>=0){
+		snprintf(sqlite_cmd_str,sizeof(sqlite_cmd_str),"INSERT INTO time(typeID,cmdType,controlVal,controlTime,frequency,remark) VALUES(%d,%d,%d,%d,%d,'%s');",\
+				l_typeID,l_cmdType,l_controlValue,control_time,l_frequency,p_entity+12);
+		
+		ret = sqlite_execute(sqlite_cmd_str);											///	quit
+		if(RESULT_OK==ret){
+			timing_task_refresh();
+		}
+	}
+	else{
+		DEBUG("invalid arguments: frequency=%d, control_time=%d\n", l_frequency, control_time);
+		ret = ERR_FORMAT;
 	}
 	return ret;
 }
@@ -364,7 +369,7 @@ static int model_select_callback(char **result, int row, int column, void *recei
 输入：	model_id——模式任务id
 返回：	0——成功；others——失败
 */
-static INSTRUCTION_RESULT_E exec_model_with_id(int model_id)
+static INSTRUCTION_RESULT_E exec_model_with_id(int model_id, char *typeIDs, unsigned int typeIDs_size)
 {
 	MODEL_S models[TASK_NUM_IN_MODEL];
 	int i = 0;
@@ -412,6 +417,7 @@ static INSTRUCTION_RESULT_E exec_model_with_id(int model_id)
 				
 				DEBUG("instruction dispatch in model execute process\n");
 				instruction_dispatch(&inst);
+				snprintf(typeIDs+strlen(typeIDs), typeIDs_size-strlen(typeIDs), "%d|", inst.type_id);
 			}
 		}
 		ret = RESULT_OK;
@@ -468,6 +474,8 @@ static int bcdChange(unsigned char input)
 
 /*
 功能：	解析串口命令串，只针对智能插座
+注意：	目前存在这样的情况，串口返回的命令串重复了多遍，需要能兼容这种情况，形如下面的结果是读取有功功率时一次返回的：
+		68 20 11 12 21 06 36 68 81 05 63 e9 33 33 33 db 16 68 20 11 12 21 06 36 68 c5 03 e9 01 63 85 16 68 20 11 06 00 41 56 68 81 06 43 c3 3c 33 33 33 00 16
 */
 int smart_socket_serial_cmd_parse(unsigned char *serial_cmd, unsigned int cmd_len, SMART_SOCKET_ACTION_E socket_action, char *socket_id, double *result)
 {
@@ -476,18 +484,20 @@ int smart_socket_serial_cmd_parse(unsigned char *serial_cmd, unsigned int cmd_le
 		return -1;
 	}
 	
-	if(cmd_len<14 || cmd_len>18){
-		DEBUG("length of serial cmd is too short/long: %d\n", cmd_len);
+	if(cmd_len<SERIAL_RESPONSE_LEN_MIN)	/*  || cmd_len>SERIAL_RESPONSE_LEN_MAX */
+	{
+		DEBUG("length of serial cmd is too short%d\n", cmd_len);
 		return -1;
 	}
 
-	int i = 0;
-	DEBUG("splice serial cmd(len=%d):", cmd_len);
-	for(i=0; i<cmd_len; i++)
-		printf(" %02x", serial_cmd[i]);
-	printf("\n");
-
-	if(0x68!=serial_cmd[0] || 0x68!=serial_cmd[7] || 0x16!=serial_cmd[cmd_len-1]){
+//	int i = 0;
+//	DEBUG("splice serial cmd(len=%d):", cmd_len);
+//	for(i=0; i<cmd_len; i++)
+//		printf(" %02x", serial_cmd[i]);
+//	printf("\n");
+	
+	if(0x68!=serial_cmd[0] || 0x68!=serial_cmd[7])	/*  || 0x16!=serial_cmd[cmd_len-1] */
+	{
 		DEBUG("this cmd has invalid header and tailer signal\n");
 		return -1;
 	}
@@ -879,6 +889,7 @@ static INSTRUCTION_RESULT_E immediatly_task_run(INSTRUCTION_S *instruction)
 		return ERR_FORMAT;
 	}
 	
+#if 0
 	ret = sendto_serial(serial_cmd, serial_cmd_len);
 	if(RESULT_OK!=ret){
 		DEBUG("send to serial failed\n");
@@ -886,8 +897,11 @@ static INSTRUCTION_RESULT_E immediatly_task_run(INSTRUCTION_S *instruction)
 	}
 	//ms_sleep(500);
 	memset(serial_cmd, 0, sizeof(serial_cmd));
-	double result = 0;
 	int recv_serial_len = recvfrom_serial(serial_cmd, sizeof(serial_cmd));
+#else
+	int recv_serial_len = serial_access(serial_cmd, serial_cmd_len, sizeof(serial_cmd));
+#endif
+	double result = 0.0;
 	if(recv_serial_len>0){
 		if(0x01==instruction->arg2)
 			ret = smart_socket_serial_cmd_parse(serial_cmd, recv_serial_len, SMART_SOCKET_RELAY_CONNECT, myequipment.socket_id, &result);
@@ -899,6 +913,7 @@ static INSTRUCTION_RESULT_E immediatly_task_run(INSTRUCTION_S *instruction)
 			return RESULT_OK;
 		}
 	}
+	
 	return ERR_OTHER;
 }
 
@@ -914,17 +929,13 @@ static INSTRUCTION_RESULT_E inquire_electrical_status(INSTRUCTION_S *instruction
 	if(RESULT_OK!=ret){
 		return ret;
 	}
-	double power = 0;
+	double power = 0.0;
 	int serial_cmd_len = smart_socket_serial_cmd_splice(serial_cmd, sizeof(serial_cmd), sock_action, myequipment.socket_id);
-	DEBUG("1, serial_cmd_len=%d\n", serial_cmd_len);
+	DEBUG("serial_cmd_len=%d\n", serial_cmd_len);
 	if(serial_cmd_len<=0)
 		return ERR_OTHER;
 	
-	if(RESULT_OK!=sendto_serial(serial_cmd, serial_cmd_len))
-		return ERR_OTHER;
-	DEBUG("sock_action=%d\n", sock_action);
-	memset(serial_cmd, 0, sizeof(serial_cmd));
-	int recv_serial_len = recvfrom_serial(serial_cmd, sizeof(serial_cmd));
+	int recv_serial_len = serial_access(serial_cmd, serial_cmd_len, sizeof(serial_cmd));
 	if(recv_serial_len>0){
 		if(SMART_SOCKET_RELAY_STATUS_READ==sock_action){
 			// 68 a0 a1 a2 a3 a4 a5 68 81 03 93 E9 xx cs 16, 
@@ -988,6 +999,10 @@ int power_inquire_callback(char **result, int row, int column, void *receiver)
 				break;
 		}
 		DEBUG("type_id=%d=0x%06x, k=%d, i=%d\n", type_id, type_id, k, i);
+		
+		/*
+		处理此前循环没有处理过的typeID，k==i表明这是个新typeID。
+		*/
 		if(k==i && 0x000000!=type_id)
 		{
 			if(0!=equipment_get(type_id, &tmp_equipment)){
@@ -1020,11 +1035,97 @@ int power_inquire_callback(char **result, int row, int column, void *receiver)
 	return 0;
 }
 
+#define REPORT_SOCKET_STATUS		"#0000000000#02#0101#80#"
+/*
+功能：定时任务、模式任务执行后需要主动上报开关状态，这里拼接指令，形如：#0000000000#02#0101#80#typeID;00/01/02;@typeID;00/01/02;@#
+typeIDs: 	需要查询状态并主动上报的typeID的集合，以竖线分割，形如：62392|76231|45253|
+			调用者需要确保这个字符串有正常的'\0'结尾
+*/
+int sockets_status_report(char *typeIDs)
+{
+	int i=0;
+	int type_id = 0;
+	char socket_id[32];
+	unsigned char serial_cmd[128];
+	double result = 0.0;
+	
+	if(NULL==typeIDs){
+		DEBUG("can not proccess with invalid arguments\n");
+		return -1;
+	}
+	else
+		DEBUG("will report typeIDs: %s\n", typeIDs);
+	
+	EQUIPMENT_S tmp_equipments[EQUIPMENT_NUM];
+	if(0!=equipments_get(&tmp_equipments)){
+		DEBUG("can not read equipments\n");
+		return -1;
+	}
+	
+	char entity[ALTERABLE_ENTITY_SIZE];	// 4096
+	snprintf(entity, sizeof(entity), "%s", REPORT_SOCKET_STATUS);
+	
+	char *p_typeID = typeIDs;
+	while(p_typeID){
+		if('|'==*p_typeID)
+			p_typeID ++;
+		
+		type_id = atoi(p_typeID);
+		if(type_id>0){
+			for(i=0;i<EQUIPMENT_NUM;i++)
+			{
+				if(type_id==tmp_equipments[i].type_id)
+				{
+					memset(socket_id, 0, sizeof(socket_id));
+					strcpy(socket_id, tmp_equipments[i].socket_id);
+					snprintf(entity+strlen(entity), sizeof(entity)-strlen(entity), "%06x;", type_id);
+					
+					memset(serial_cmd, 0, sizeof(serial_cmd));
+					
+					int sock_status = SMART_SOCKET_RELAY_STATUS_UNKNOWN;
+					int serial_cmd_len = smart_socket_serial_cmd_splice(serial_cmd,sizeof(serial_cmd), SMART_SOCKET_RELAY_STATUS_READ,socket_id);
+					if(serial_cmd_len>0)
+					{
+						int recv_serial_len = serial_access(serial_cmd, serial_cmd_len, sizeof(serial_cmd));
+						if(recv_serial_len>0)
+						{
+							if(RESULT_OK==smart_socket_serial_cmd_parse(serial_cmd,recv_serial_len,SMART_SOCKET_RELAY_STATUS_READ,socket_id,&result))
+							{
+								sock_status = (int)result;
+								if(sock_status<SMART_SOCKET_RELAY_STATUS_OFF || sock_status>SMART_SOCKET_RELAY_STATUS_UNKNOWN)
+									sock_status = SMART_SOCKET_RELAY_STATUS_UNKNOWN;
+								DEBUG("socket %d(0x%06x) status: %d(%lf)\n", type_id, type_id, sock_status, result);
+							}
+						}
+					}
+					snprintf(entity+strlen(entity), sizeof(entity)-strlen(entity), "%02x;@", sock_status);
+					break;
+				}
+			}
+		}
+		
+		char *p_ver_line = strchr(p_typeID, '|');
+		if(p_ver_line)
+			p_typeID = p_ver_line + 1;
+		else
+			break;
+	}
+	
+	if(strlen(entity)>strlen(REPORT_SOCKET_STATUS)){	
+		snprintf(entity+strlen(entity), sizeof(entity)-strlen(entity), "#");
+		cmd_insert(entity, CMD_ACTIVE_REPORTED_STATUS);
+		return 0;
+	}
+	else
+		return -1;
+}
+
 /*
 功能：	查询有功功率数据库
 输入：	instruction——有功功率查询指令
 		single_equipment_flag——是否查询单个设备的有功功率，1表示查询单个设备有功功率，0表示查询所有设备的有功功率
 */
+/*
 static INSTRUCTION_RESULT_E inquire_active_power(INSTRUCTION_S *instruction, int single_equipment_flag)
 {
 	int start_time = 0;
@@ -1060,6 +1161,7 @@ static INSTRUCTION_RESULT_E inquire_active_power(INSTRUCTION_S *instruction, int
 	
 	return ret;
 }
+*/
 
 /*
 功能：	查询电量数据库
@@ -1435,15 +1537,23 @@ static INSTRUCTION_RESULT_E model_delete(INSTRUCTION_S *instruction)
 static INSTRUCTION_RESULT_E timing_task_delete(INSTRUCTION_S *instruction)
 {
 	char sqlite_cmd_str[SQLITECMDLEN];
-	memset(sqlite_cmd_str, 0, sizeof(sqlite_cmd_str));
 
+	/*
+	在实测时，当在UI上更新一个定时任务时，服务器先发送一个删除旧任务的指令，然后再发送添加新任务的指令。
+	但是删除旧任务的“参数1+参数2+频度+时间戳”是新任务的参数，无法识别。
+	*/
+#if 0
 	int control_val = appoint_str2int(instruction->alterable_entity, strlen(instruction->alterable_entity), 0, 4, 16);
 	int frequency = appoint_str2int(instruction->alterable_entity, strlen(instruction->alterable_entity), 4, 2, 16);
 	int control_time = appoint_str2int(instruction->alterable_entity, strlen(instruction->alterable_entity), 6, 10, 10);
 	
-	sprintf(sqlite_cmd_str,"DELETE FROM time WHERE (cmdType=1 AND controlVal=%d AND frequency=%d AND controlTime=%d);",
+	snprintf(sqlite_cmd_str,sizeof(sqlite_cmd_str),"DELETE FROM time WHERE (cmdType=1 AND controlVal=%d AND frequency=%d AND controlTime=%d);",
 																control_val, frequency, control_time);
-	DEBUG("sqlite cmd str: %s\n", sqlite_cmd_str);
+#else
+	snprintf(sqlite_cmd_str,sizeof(sqlite_cmd_str),"DELETE FROM time WHERE (typeID=%d);",
+																instruction->type_id);
+#endif
+	//DEBUG("sqlite cmd str: %s\n", sqlite_cmd_str);
 	return sqlite_execute(sqlite_cmd_str);
 }
 
@@ -1485,27 +1595,19 @@ static INSTRUCTION_RESULT_E verify_address(INSTRUCTION_S *instruction)
 		serial_cmd_len = smart_socket_serial_cmd_splice(serial_cmd,sizeof(serial_cmd),smart_socket_action,instruction->alterable_entity);
 		if(serial_cmd_len>0)
 		{
-			if(RESULT_OK==sendto_serial(serial_cmd,serial_cmd_len))
+			int recv_serial_len = serial_access(serial_cmd, serial_cmd_len, sizeof(serial_cmd));
+			if(recv_serial_len>0)
 			{
-				memset(serial_cmd, 0, sizeof(serial_cmd));
-				int recv_serial_len = recvfrom_serial(serial_cmd, sizeof(serial_cmd));
-				if(recv_serial_len>0)
-				{
-					double result = 0;
-					smart_socket_serial_cmd_parse(serial_cmd, recv_serial_len, smart_socket_action, instruction->alterable_entity, &result);
-					DEBUG("result=%lf\n", result);
-					if(1==(int)(result))
-						ret = RESULT_OK;
-					else
-						ret = ERR_OTHER;
-				}
-				else{
-					DEBUG("receive from serial failed\n");
-					ret = ERR_SERIAL;
-				}
+				double result = 0.0;
+				smart_socket_serial_cmd_parse(serial_cmd, recv_serial_len, smart_socket_action, instruction->alterable_entity, &result);
+				DEBUG("result=%lf\n", result);
+				if(1==(int)(result))
+					ret = RESULT_OK;
+				else
+					ret = ERR_OTHER;
 			}
 			else{
-				DEBUG("send to serial failed\n");
+				DEBUG("receive from serial failed\n");
 				ret = ERR_SERIAL;
 			}
 		}
@@ -1534,8 +1636,18 @@ INSTRUCTION_RESULT_E instruction_dispatch(INSTRUCTION_S *instruction)
 				vendor_id = (instruction->type_id >> 16) & 0xff;
 				DEBUG("immediatly task, vendor id: 0x%02x\n", vendor_id);
 				if(0xfe==instruction->arg1){			// 立即执行arg2指定的模式
-					DEBUG("do model task by model_id\n");
-					return exec_model_with_id(instruction->arg2);
+					DEBUG("do model task by model_id, %d\n", instruction->arg2);
+					
+					char typeIDs[4096];
+					memset(typeIDs, 0, sizeof(typeIDs));
+					INSTRUCTION_RESULT_E ret = exec_model_with_id(instruction->arg2, typeIDs, sizeof(typeIDs));
+					if(RESULT_OK==ret){
+						/*
+						在此处上报插座状态有点儿早。可能导致主动上报状态比模式执行结果更早的返回给服务器
+						*/
+						sockets_status_report(typeIDs);
+					}
+					return ret;
 				}
 				else{									// 普通的即时任务。来源有两处：1、服务器直接下发；2、先通过模式设定即时任务，然后通过模式执行即时任务。
 					if(0x80 > vendor_id)				// 为啥有这个判断？？
@@ -1786,6 +1898,17 @@ int instruction_insert(INSTRUCTION_S *inst)
 	return ret;
 }
 
+int sqlite_read_basic_power_callback(char **result, int row, int column, void *receiver)
+{
+	DEBUG("row=%d, column=%d, receiver add=%p\n", row, column, receiver);
+	if(row>0){
+		*((double *)receiver) = atof(result[1*column]);
+		DEBUG("basic power data: %08f\n", *((double *)receiver));
+	}
+	
+	return 0;
+}
+
 /*
 功能：	单独处理通过定时任务插入的指令。目前是定时查询有功功率和电量
 */
@@ -1797,66 +1920,93 @@ void instruction_insert_poll(void)
 	char socket_id[32];
 	unsigned char serial_cmd[128];
 	char sqlite_cmd[128];
-	double power = 0;
+	double power = 0.0;
 	SMART_SOCKET_ACTION_E smart_socket_action = SMART_SOCKET_ACTION_UNDEFINED;
 
 	sem_wait(&s_sem_insert_insts);
-	for(i=0; i<INSTRUCTION_INSERT_NUM; i++){
-		if(-1!=g_insert_insts[i].alterable_flag){
-			EQUIPMENT_S tmp_equipments[EQUIPMENT_NUM];
-			if(0!=equipments_get(&tmp_equipments)){
-				DEBUG("can not read equipments\n");
-				break;
-			}
-			for(j=0;j<EQUIPMENT_NUM;j++)
-			{
-				if(-1!=tmp_equipments[j].type_id)
+	EQUIPMENT_S tmp_equipments[EQUIPMENT_NUM];
+	if(0!=equipments_get(&tmp_equipments)){
+		DEBUG("can not read equipments\n");
+	}
+	else{
+		for(i=0; i<INSTRUCTION_INSERT_NUM; i++){
+			if(-1!=g_insert_insts[i].alterable_flag){
+				for(j=0;j<EQUIPMENT_NUM;j++)
 				{
-					type_id = tmp_equipments[j].type_id;
-					memset(socket_id, 0, sizeof(socket_id));
-					strcpy(socket_id, tmp_equipments[j].socket_id);
-					
-					memset(serial_cmd, 0, sizeof(serial_cmd));
-					if(0x02==g_insert_insts[i].arg1)
-						smart_socket_action = SMART_SOCKET_ACTIVE_POWER_READ;
-					else if(0x03==g_insert_insts[i].arg1)
-						smart_socket_action = SMART_SOCKET_ACTIVE_POWER_CONSUMPTION_READ;
-					else{
-						DEBUG("can not process such arg1: %d\n", g_insert_insts[i].arg1);
-						break;
-					}
-						
-					int serial_cmd_len = smart_socket_serial_cmd_splice(serial_cmd,sizeof(serial_cmd), smart_socket_action,socket_id);
-					if(serial_cmd_len>0)
+					if(-1!=tmp_equipments[j].type_id)
 					{
-						if(RESULT_OK==sendto_serial(serial_cmd,serial_cmd_len))
+						type_id = tmp_equipments[j].type_id;
+						memset(socket_id, 0, sizeof(socket_id));
+						strcpy(socket_id, tmp_equipments[j].socket_id);
+						
+						memset(serial_cmd, 0, sizeof(serial_cmd));
+						if(0x02==g_insert_insts[i].arg1)
+							smart_socket_action = SMART_SOCKET_ACTIVE_POWER_READ;
+						else if(0x03==g_insert_insts[i].arg1)
+							smart_socket_action = SMART_SOCKET_ACTIVE_POWER_CONSUMPTION_READ;
+						else{
+							DEBUG("can not process such arg1: %d\n", g_insert_insts[i].arg1);
+							break;
+						}
+							
+						int serial_cmd_len = smart_socket_serial_cmd_splice(serial_cmd,sizeof(serial_cmd), smart_socket_action,socket_id);
+						if(serial_cmd_len>0)
 						{
-							memset(serial_cmd, 0, sizeof(serial_cmd));
-							int recv_serial_len = recvfrom_serial(serial_cmd, sizeof(serial_cmd));
+							int recv_serial_len = serial_access(serial_cmd, serial_cmd_len, sizeof(serial_cmd));
 							if(recv_serial_len>0)
 							{
 								if(RESULT_OK==smart_socket_serial_cmd_parse(serial_cmd,recv_serial_len,smart_socket_action,socket_id,&power))
 								{
+									if(power<0){
+										DEBUG("perhaps some error, catch power little 0. translate it as 0\n");
+										power = 0;
+									}
+									
 									memset(sqlite_cmd, 0, sizeof(sqlite_cmd));
 									if(SMART_SOCKET_ACTIVE_POWER_READ==smart_socket_action){
-										sprintf(sqlite_cmd,"INSERT INTO actpower(typeID,hourTime,data,status) VALUES(%d,%d,%lf,0);",\
+										snprintf(sqlite_cmd,sizeof(sqlite_cmd),"INSERT INTO actpower(typeID,hourTime,data,status) VALUES(%d,%d,%lf,0);",\
 												type_id,(int)time(NULL)+smart_power_difftime_get(),power);
 									}
 									else if(SMART_SOCKET_ACTIVE_POWER_CONSUMPTION_READ==smart_socket_action){
-										sprintf(sqlite_cmd,"INSERT INTO power(typeID,hourTime,data,status) VALUES(%d,%d,%lf,0);",\
+										
+										/*
+										status==2表明此记录是上次采集电量时的数据，将本次采集的电量power和上次记录的电量之间的差值录入数据库。
+										第一次建立表格时，此typeID没有对应的status==2的记录，上报的电量等于采集的电量。
+										*/
+										double basic_power_data = 0.0;
+										int (*p_sqlite_read_basic_power_callback)(char **,int,int,void *) = sqlite_read_basic_power_callback;
+										
+										snprintf(sqlite_cmd, sizeof(sqlite_cmd), "SELECT data FROM power WHERE typeID=%d AND status=2;", type_id);
+										int ret = sqlite_read(sqlite_cmd, (void *)(&basic_power_data), p_sqlite_read_basic_power_callback);
+										if(ret>RESULT_OK){
+											snprintf(sqlite_cmd, sizeof(sqlite_cmd), "UPDATE power SET data=%lf WHERE typeID=%d AND status=2;", power, type_id);
+										}
+										else{
+											DEBUG("no basic power data, have to initial it\n");
+											snprintf(sqlite_cmd,sizeof(sqlite_cmd),"INSERT INTO power(typeID,hourTime,data,status) VALUES(%d,%d,%lf,2);",\
+													type_id,(int)time(NULL)+smart_power_difftime_get(),power);
+										}
+										sqlite_execute(sqlite_cmd);
+										
+										power -= basic_power_data;
+										if(power<0){
+											DEBUG("shit! calculate power little than 0(%lf-%lf), translate is as 0", power, basic_power_data);
+											power=0;
+										}
+										snprintf(sqlite_cmd,sizeof(sqlite_cmd),"INSERT INTO power(typeID,hourTime,data,status) VALUES(%d,%d,%lf,0);",\
 												type_id,(int)time(NULL)+smart_power_difftime_get(),power);
 									}
-
-									DEBUG("insert actpower sqlite cmd str: %s\n", sqlite_cmd);
+	
+									DEBUG("insert power sqlite cmd str: %s\n", sqlite_cmd);
 									sqlite_execute(sqlite_cmd);
 								}
 							}
 						}
 					}
 				}
+				
+				g_insert_insts[i].alterable_flag = -1;
 			}
-			
-			g_insert_insts[i].alterable_flag = -1;
 		}
 	}
 	sem_post(&s_sem_insert_insts);
@@ -1895,7 +2045,7 @@ void instruction_mainloop()
 	{
 		FD_ZERO(&rdfds);
 		FD_SET(fifo_fd, &rdfds);
-		tv_select.tv_sec = 37;
+		tv_select.tv_sec = 1137;
 		tv_select.tv_usec = 717000;
 		ret_select = select(fifo_fd+1, &rdfds, NULL, NULL, &tv_select);
 		if(ret_select<0){

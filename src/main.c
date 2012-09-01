@@ -60,20 +60,12 @@ int main(int argc, char *argv[])
 	int serial_cmd_len = smart_socket_serial_cmd_splice(serial_cmd,sizeof(serial_cmd), smart_socket_action,socket_id);
 	if(serial_cmd_len>0)
 	{
-		if(RESULT_OK==sendto_serial(serial_cmd,serial_cmd_len))
+		int recv_serial_len = serial_access(serial_cmd, serial_cmd_len, sizeof(serial_cmd));
+		if(recv_serial_len>0)
 		{
-			//sleep(3);
-			memset(serial_cmd, 0, sizeof(serial_cmd));
-			int recv_serial_len = recvfrom_serial(serial_cmd, sizeof(serial_cmd));
-			if(recv_serial_len>0)
-			{
-				double result = 0;
-				smart_socket_serial_cmd_parse(serial_cmd, recv_serial_len, smart_socket_action, socket_id, &result);
-				DEBUG("result=%lf\n", result);
-			}
-		}
-		else{
-			DEBUG("send to serial failed\n");
+			double result = 0.0;
+			smart_socket_serial_cmd_parse(serial_cmd, recv_serial_len, smart_socket_action, socket_id, &result);
+			DEBUG("result=%lf\n", result);
 		}
 	}
 	

@@ -391,6 +391,7 @@ static int smart_power_cmd_splice(int index, char *buf, unsigned int buf_len)
 		case CMD_HEADER_REPORTED:
 		case CMD_ACTIVE_REPORTED_ACTPOWER:
 		case CMD_ACTIVE_REPORTED_POWER:
+		case CMD_ACTIVE_REPORTED_STATUS:
 #if 0		// 主动上报的命令串没有serv_str部分
 			snprintf(buf, buf_len, "#re#%s#%s%s", g_smart_power_cmds[index].serv_str, serial_num, g_smart_power_cmds[index].entity);
 #else
@@ -450,11 +451,12 @@ int smart_power_active_reported_clear(const CMD_HEADER_E report_type)
 }
 
 /*
-功能：	插入主动上报命令，来源为定时上报任务（有功功率、电量）
+功能：	插入主动上报命令，来源为定时上报任务（有功功率、电量）和开关状态
+注：主动上报开关状态是在非交互操作插座开关后触发的，包括：定时和模式任务执行后的状态。
 */
 int cmd_insert(char *entity, CMD_HEADER_E report_type)
 {
-	DEBUG("insert a cmd with instruction\n");
+	DEBUG("insert a cmd mannually: %s\n", entity);
 	int index_p = smart_power_cmds_open(CMD_ARRAY_OP_PROCESS, BOOL_TRUE);
 	if(-1!=index_p){
 		g_smart_power_cmds[index_p].id = 0;
@@ -705,7 +707,7 @@ Accept-Charset: GBK,utf-8;q=0.7,*;q=0.3\r\n\r\n", sizeof(l_send_buf));
 				}
 				else{
 					ERROROUT("send registration to server failed!\n");
-					delay_sec = 30 + randint()%60;
+					delay_sec = 30 + randint(60.0);
 					DEBUG("will regist again after %d seconds...\n", delay_sec);
 					continue_myself(g_fifo_fd);
 					sleep(delay_sec);
